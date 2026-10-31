@@ -56,6 +56,16 @@ DISCLAIMER = (
     "recommendation."
 )
 
+WITHIN_RANGE = "Within the reported range"
+BELOW_RANGE_STATUSES = {
+    "Below the reported range",
+    "Below the reported lower limit",
+}
+ABOVE_RANGE_STATUSES = {
+    "Above the reported range",
+    "Above the reported upper limit",
+}
+
 
 def extract_lab_results(report_text):
     """
@@ -350,3 +360,31 @@ def _explanation(name, value_text, unit, reference_text, status):
         )
     sentences.append(DISCLAIMER)
     return " ".join(sentences)
+
+
+def summarize_lab_results(results):
+    """Count extracted rows by the comparison actually stored on each row."""
+    if not isinstance(results, (list, tuple)):
+        rows = []
+    else:
+        rows = [item for item in results if isinstance(item, dict)]
+
+    within = below = above = not_classified = 0
+    for item in rows:
+        status = item.get("status") or ""
+        if status == WITHIN_RANGE:
+            within += 1
+        elif status in BELOW_RANGE_STATUSES:
+            below += 1
+        elif status in ABOVE_RANGE_STATUSES:
+            above += 1
+        else:
+            not_classified += 1
+
+    return {
+        "total": len(rows),
+        "within": within,
+        "below": below,
+        "above": above,
+        "not_classified": not_classified,
+    }

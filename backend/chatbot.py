@@ -184,13 +184,6 @@ not a medical diagnosis.
 """
 
 
-def _scrub(text, secret):
-    rendered = text if isinstance(text, str) else repr(text)
-    if secret:
-        rendered = rendered.replace(secret, "[redacted]")
-    return rendered
-
-
 def answer_question(question, report_text="", lab_results=None, history=None):
     """
     Generate an educational response using Gemini AI,
@@ -224,7 +217,8 @@ def answer_question(question, report_text="", lab_results=None, history=None):
         try:
             sources = retrieve_information(question) or []
         except Exception as retrieval_error:
-            print("RETRIEVAL ERROR:", _scrub(repr(retrieval_error), api_key))
+            # Log the type only. Prompts and report text are not written out.
+            print("RETRIEVAL ERROR:", type(retrieval_error).__name__)
             sources = []
 
         context_parts = []
@@ -263,10 +257,8 @@ def answer_question(question, report_text="", lab_results=None, history=None):
         }
 
     except Exception as error:
-        print("\n========== GEMINI CHATBOT ERROR ==========")
-        print("Error type:", type(error).__name__)
-        print("Error details:", _scrub(repr(error), api_key))
-        print("==========================================\n")
+        # The exception text can echo the request. Keep it off the log.
+        print("GEMINI CHATBOT ERROR:", type(error).__name__)
 
         return {
             "answer": (
