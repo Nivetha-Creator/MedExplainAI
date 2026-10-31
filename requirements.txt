@@ -1,0 +1,8 @@
+streamlit
+pymupdf
+pytesseract
+Pillow
+pandas
+python-dotenv
+scikit-learn
+google-genai
