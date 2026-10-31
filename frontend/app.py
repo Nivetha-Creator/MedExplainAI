@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # --------------------------------------------------
 from backend.ocr import extract_report_text
 from backend.report_analyzer import extract_lab_results
-from backend.chatbot import answer_question
+from backend.chatbot import answer_question, prepare_model_context
 
 
 # --------------------------------------------------
@@ -114,6 +114,49 @@ if "report_filename" not in st.session_state:
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+
+if "ai_consent" not in st.session_state:
+    st.session_state.ai_consent = False
+
+
+def _show_lab_results(results):
+    """Show parsed rows and the educational note for each one."""
+    table = []
+    for item in results:
+        table.append({
+            "Test": item.get("test_name", ""),
+            "Result": item.get("value_text", item.get("value", "")),
+            "Unit": item.get("unit", ""),
+            "Reported reference range": item.get("reference_text", ""),
+            "Comparison": item.get("status", ""),
+        })
+
+    st.dataframe(table, width="stretch", hide_index=True)
+
+    st.markdown("#### Simple explanations")
+    st.caption(
+        "These notes use only the extracted row and a general glossary. "
+        "They do not diagnose a condition or recommend treatment."
+    )
+    for item in results:
+        name = item.get("test_name") or "Result"
+        explanation = item.get("explanation") or item.get("status") or ""
+        st.markdown(f"**{name}**")
+        st.write(explanation)
+
+
+def _show_source(source):
+    if isinstance(source, dict):
+        title = source.get("title") or "Educational information"
+        st.markdown(f"**{title}**")
+        text = source.get("text") or ""
+        if text:
+            st.write(text)
+        label = source.get("source") or ""
+        if label:
+            st.caption(str(label))
+        return
+    st.write(source)
 
 
 # --------------------------------------------------
@@ -237,12 +280,17 @@ elif page == "My Medical Report":
 
     # The consent checkbox is required before sending report text
     # to the external AI service in the question page.
-    st.checkbox(
+    # The checkbox key disappears when this page is not shown. Mirror it
+    # into ai_consent so the choice still applies on Ask a Question, and
+    # restore the checkbox when the user comes back.
+    if "ai_consent_box" not in st.session_state:
+        st.session_state.ai_consent_box = st.session_state.ai_consent
+    consent_checked = st.checkbox(
         "I understand that report text may be sent to the configured "
         "AI service if I choose to ask a question about it.",
-        key="ai_consent",
-        value=False,
+        key="ai_consent_box",
     )
+    st.session_state.ai_consent = bool(consent_checked)
 
     if uploaded_file is not None:
 
@@ -251,16 +299,10 @@ elif page == "My Medical Report":
         if st.button("Extract and Analyze Report", type="primary"):
 
             file_bytes = uploaded_file.getvalue()
-            file_extension = Path(uploaded_file.name).suffix.lower()
 
             try:
                 with st.spinner("Reading your report..."):
 
-                    # DEBUG INFORMATION
-                    st.write("Uploaded filename:", uploaded_file.name)
-                    st.write("Detected extension:", file_extension)
-
-                    # Pass the real filename to the OCR function.
                     extracted_text = extract_report_text(
                         file_bytes,
                         uploaded_file.name,
@@ -288,9 +330,14 @@ elif page == "My Medical Report":
 
                 st.success("Report text extracted successfully!")
 
-            except Exception as error:
-                st.error("Report processing failed.")
-                st.exception(error)
+            except ValueError as error:
+                st.error(str(error))
+
+            except Exception:
+                st.error(
+                    "Report processing failed. Check that the file is a "
+                    "readable PDF, PNG, or JPEG, then try again."
+                )
 
     # Display results retained in session state.
     if st.session_state.report_text:
@@ -327,7 +374,7 @@ elif page == "My Medical Report":
 
         elif hasattr(results, "empty") and hasattr(results, "to_dict"):
             if not results.empty:
-                st.dataframe(results, use_container_width=True)
+                st.dataframe(results, width="stretch")
             else:
                 st.info(
                     "No laboratory rows were recognized. You can still "
@@ -335,7 +382,9 @@ elif page == "My Medical Report":
                 )
 
         elif isinstance(results, (list, tuple)):
-            if results:
+            if results and all(isinstance(item, dict) for item in results):
+                _show_lab_results(results)
+            elif results:
                 st.write(results)
             else:
                 st.info(
@@ -434,8 +483,21 @@ elif page == "Ask a Question":
 
     if question:
 
+        consent = bool(st.session_state.get("ai_consent", False))
+        report_context, lab_context, prior_history = prepare_model_context(
+            st.session_state.report_text,
+            consent,
+            st.session_state.report_results,
+            st.session_state.chat_history,
+        )
+        used_report = bool(report_context)
+
         st.session_state.chat_history.append(
-            {"role": "user", "content": question}
+            {
+                "role": "user",
+                "content": question,
+                "used_report": used_report,
+            }
         )
 
         with st.chat_message("user"):
@@ -447,20 +509,11 @@ elif page == "Ask a Question":
 
                 try:
 
-                    report_context = ""
-
-                    # Include report only when user has consented
-                    if (
-                        st.session_state.report_text
-                        and st.session_state.get("ai_consent", False)
-                    ):
-                        report_context = (
-                            st.session_state.report_text[:12000]
-                        )
-
                     response = answer_question(
                         question,
-                        report_text=report_context
+                        report_text=report_context,
+                        lab_results=lab_context,
+                        history=prior_history,
                     )
 
                     if isinstance(response, dict):
@@ -482,23 +535,29 @@ elif page == "Ask a Question":
                     if sources:
                         with st.expander("📚 Educational Sources"):
                             for source in sources:
-                                st.write(source)
+                                _show_source(source)
 
                     st.session_state.chat_history.append(
                         {
                             "role": "assistant",
-                            "content": str(answer)
+                            "content": str(answer),
+                            "used_report": used_report,
                         }
                     )
 
-                except Exception as error:
-
-                    st.error(
+                except Exception:
+                    fallback = (
                         "Sorry, I couldn't generate an answer. "
                         "Please try again."
                     )
-
-                    st.exception(error)
+                    st.error(fallback)
+                    st.session_state.chat_history.append(
+                        {
+                            "role": "assistant",
+                            "content": fallback,
+                            "used_report": used_report,
+                        }
+                    )
 
 
 # --------------------------------------------------
@@ -515,8 +574,9 @@ elif page == "About":
 
         **Features**
         - PDF and image text extraction
-        - Basic laboratory result parsing
-        - Educational question answering
+        - Laboratory result parsing with reported reference ranges
+        - Simple educational explanations of extracted results
+        - Educational question answering, with or without a report
         - Downloadable extracted text
 
         **Important limitations**
