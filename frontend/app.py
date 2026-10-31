@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # --------------------------------------------------
 # BACKEND IMPORTS
 # --------------------------------------------------
-from backend.ocr import extract_report_text
+from backend.ocr import extract_report_text, verify_tesseract
 from backend.report_analyzer import extract_lab_results, summarize_lab_results
 from backend.chatbot import answer_question, prepare_model_context
 
@@ -247,6 +247,10 @@ if "ocr_detail" not in st.session_state:
 if "go_to_report" not in st.session_state:
     st.session_state.go_to_report = False
 
+if "tesseract_status" not in st.session_state:
+    # One lightweight check at session start. No report text is involved.
+    st.session_state.tesseract_status = verify_tesseract()
+
 
 def _status_class(status):
     if status == "Within the reported range":
@@ -464,6 +468,16 @@ if st.session_state.ai_consent:
     st.sidebar.caption("AI consent: on")
 else:
     st.sidebar.caption("AI consent: off")
+
+tesseract_status = st.session_state.tesseract_status
+if tesseract_status.get("available"):
+    version = tesseract_status.get("version") or "installed"
+    st.sidebar.caption(f"OCR: Tesseract {version}")
+else:
+    st.sidebar.caption("OCR: Tesseract unavailable")
+    st.sidebar.caption(
+        "Text PDFs still work. Scanned PDFs and images need Tesseract."
+    )
 
 st.sidebar.caption("Educational support only — not a medical diagnosis.")
 

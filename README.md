@@ -145,6 +145,38 @@ streamlit run frontend/app.py
 
 Streamlit prints a local URL, usually `http://localhost:8501`.
 
+## Deploy on Render (Docker)
+
+Scanned PDFs and images need the system Tesseract package. The repository `Dockerfile` installs `tesseract-ocr` and `tesseract-ocr-eng`, then starts Streamlit on `0.0.0.0` using Render's `PORT` value.
+
+In the Render dashboard, create or edit a **Web Service** and choose the **Docker** runtime. Do not use the native Python runtime for this app, because that runtime will not install the Linux Tesseract package from the Dockerfile.
+
+Recommended settings:
+
+| Setting | Value |
+| --- | --- |
+| Runtime | Docker |
+| Branch | the branch connected to this deployment |
+| Dockerfile Path | `./Dockerfile` |
+| Docker Command | leave blank so the Dockerfile `CMD` is used |
+| Health Check Path | optional; `/_stcore/health` |
+
+Environment variables:
+
+| Name | Value |
+| --- | --- |
+| `GEMINI_API_KEY` | your Gemini key (Render secret) |
+| `GEMINI_MODEL` | `gemini-2.5-flash` or another supported model |
+
+Do not commit a `.env` file. After changing the Dockerfile, trigger a **manual redeploy** so Render rebuilds the image. When the app is healthy, the sidebar should show `OCR: Tesseract` with a version. If it still says Tesseract is unavailable, the service is almost certainly still running on the native Python runtime instead of Docker.
+
+Local Docker check:
+
+```bash
+docker build -t medexplain-ai .
+docker run --rm -p 10000:10000 -e PORT=10000 medexplain-ai
+```
+
 ## Application workflow
 
 1. Open **My Medical Report** and upload a fictional or de-identified PDF, PNG, or JPG.

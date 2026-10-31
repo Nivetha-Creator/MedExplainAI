@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from io import BytesIO
 from pathlib import Path
 
@@ -11,27 +12,118 @@ class ReportReadError(ValueError):
     """The uploaded file could not be read as report text."""
 
 
-def configure_tesseract():
-    """Find a local Tesseract binary, including a typical Windows install."""
-    current = getattr(pytesseract.pytesseract, "tesseract_cmd", None)
-    if current and current != "tesseract" and Path(current).exists():
-        return str(current)
+# Prefer PATH and common Linux install locations used by Docker/Render.
+_LINUX_TESSERACT_PATHS = (
+    "/usr/bin/tesseract",
+    "/usr/local/bin/tesseract",
+)
 
-    candidates = [
+_WINDOWS_TESSERACT_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def _candidate_tesseract_paths():
+    """Return install candidates. PATH / Linux first; Windows only as fallback."""
+    seen = set()
+    ordered = []
+
+    for candidate in (
         shutil.which("tesseract"),
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            pytesseract.pytesseract.tesseract_cmd = str(candidate)
-            return str(candidate)
+        *_LINUX_TESSERACT_PATHS,
+        *_WINDOWS_TESSERACT_PATHS,
+    ):
+        if not candidate:
+            continue
+        normalized = str(Path(candidate))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def configure_tesseract():
+    """
+    Point pytesseract at a working Tesseract binary.
+
+    Detection uses the process PATH and standard Linux locations first so
+    Docker and Render deployments do not depend on a Windows path.
+    """
+    current = getattr(pytesseract.pytesseract, "tesseract_cmd", None)
+    if current and current not in ("tesseract", "tesseract.exe"):
+        current_path = Path(current)
+        if current_path.exists():
+            return str(current_path)
+
+    for candidate in _candidate_tesseract_paths():
+        path = Path(candidate)
+        if not path.exists():
+            continue
+        pytesseract.pytesseract.tesseract_cmd = str(path)
+        return str(path)
 
     raise ReportReadError(
         "Tesseract OCR is not installed or could not be found. "
         "A PDF that already contains text can still be read. "
         "Scanned PDFs and images need Tesseract on the system PATH."
     )
+
+
+def verify_tesseract():
+    """
+    Confirm Tesseract can be found and started.
+
+    Returns a dict with available, path, version, and detail fields.
+    Never includes secrets or report contents.
+    """
+    try:
+        path = configure_tesseract()
+    except ReportReadError as error:
+        return {
+            "available": False,
+            "path": "",
+            "version": "",
+            "detail": str(error),
+        }
+
+    try:
+        version = str(pytesseract.get_tesseract_version())
+        return {
+            "available": True,
+            "path": path,
+            "version": version,
+            "detail": f"Tesseract {version} is available.",
+        }
+    except Exception:
+        # Fall back to a direct --version call if the helper fails.
+        try:
+            completed = subprocess.run(
+                [path, "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            first_line = (completed.stdout or completed.stderr or "").splitlines()
+            version = first_line[0].strip() if first_line else "unknown"
+            return {
+                "available": True,
+                "path": path,
+                "version": version,
+                "detail": f"Tesseract is available at {path}.",
+            }
+        except Exception as error:
+            return {
+                "available": False,
+                "path": path,
+                "version": "",
+                "detail": (
+                    "Tesseract was found but could not be started. "
+                    f"Error type: {type(error).__name__}."
+                ),
+            }
 
 
 def extract_report_text(file_bytes, filename=None):
@@ -135,13 +227,16 @@ def _prepare_image(image):
 def _read_image_text(image):
     prepared = _prepare_image(image)
     try:
+        # Ensure the command path is set before every OCR call.
+        configure_tesseract()
         return pytesseract.image_to_string(
             prepared,
             config="--psm 6",
         ).strip()
     except pytesseract.TesseractNotFoundError as error:
         raise ReportReadError(
-            "Tesseract OCR is not installed or could not be found."
+            "Tesseract OCR is not installed or could not be found. "
+            "On Render, rebuild the Docker image so tesseract-ocr is installed."
         ) from error
     except ReportReadError:
         raise
